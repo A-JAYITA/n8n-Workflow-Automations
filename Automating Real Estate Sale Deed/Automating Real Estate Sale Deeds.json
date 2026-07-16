@@ -1,0 +1,431 @@
+{
+  "name": "Automating Real Estate Sale Deeds",
+  "nodes": [
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "templateFileId",
+              "value": "1nbSIaDRoXjWbTedqQ2DpxoF9SHqC7-A2NzDCCU4jKCM",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "destinationFolderId",
+              "value": "1EYHWGKIPKzSfvzrVIY7Gto8aS-Jv70TB",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "outputDocumentName",
+              "value": "={{ 'Sale Deed - ' + $json.BUYER_NAME }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5b50c205-7523-4752-96a4-17225c2a4cc8",
+      "name": "Sale Data and Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2032,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Get all items from the Google Sheets Trigger and the previous node\nconst sheetItems = $('Google Sheets Trigger').all();\nconst copiedDocs = $input.all();\n\n// 2. Map through every record to process them all\nreturn sheetItems.map((sheetItem, index) => {\n  const sheetInput = sheetItem.json;\n  \n  // Find the matching copied document for this row (fallback to the first one if counts don't match)\n  const copiedDoc = (copiedDocs[index] || copiedDocs[0]).json;\n\n  const requests = [];\n\n  // 3. Loop through every single column in the current row automatically\n  for (const [key, value] of Object.entries(sheetInput)) {\n    // Converts a header like \"Seller Name\" into \"{{SELLER_NAME}}\"\n    const placeholder = `{{${key.replace(/\\s+/g, '_').toUpperCase()}}}`;\n    \n    requests.push({\n      replaceAllText: {\n        containsText: {\n          text: placeholder,\n          matchCase: true\n        },\n        replaceText: (value !== null && value !== undefined) ? String(value) : ''\n      }\n    });\n  }\n\n  // 4. Return the structured payload for this specific record\n  return {\n    json: {\n      ...sheetInput,\n      documentId: copiedDoc.id,\n      requests\n    }\n  };\n});"
+      },
+      "id": "cc361247-8b6b-4cb6-a484-30e8ce03b1fe",
+      "name": "Build Replacement Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1536,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://docs.googleapis.com/v1/documents/' + $json.documentId + ':batchUpdate' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ requests: $json.requests }) }}",
+        "options": {}
+      },
+      "id": "db135943-dbc0-454c-a65e-aa91c81d4521",
+      "name": "Replace Placeholders",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1296,
+        0
+      ],
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "4V7azYA1jj7TbqXE",
+          "name": "Google Docs OAuth2 API"
+        },
+        "googleOAuth2Api": {
+          "id": "HkFxs8uvgasEsDMb",
+          "name": "Google account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://docs.googleapis.com/v1/documents/' + $('Replace Placeholders').item.json.documentId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "options": {}
+      },
+      "id": "562574b8-750a-47b1-8a1f-679086751005",
+      "name": "Read Copied Document",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1056,
+        0
+      ],
+      "credentials": {
+        "googleOAuth2Api": {
+          "id": "HkFxs8uvgasEsDMb",
+          "name": "Google account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function extractText(value) {\n  if (typeof value === 'string') return value;\n  if (Array.isArray(value)) return value.map(extractText).join('');\n  if (value && typeof value === 'object') {\n    return Object.values(value).map(extractText).join('');\n  }\n  return '';\n}\n\n// 1. Grab all incoming records and all source node records\nconst allDocuments = $input.all();\nconst allSources = $('Read Copied Document').all();\n\n// 2. Map over every incoming item to process them all\nreturn allDocuments.map((docItem, index) => {\n  const documentResponse = docItem.json;\n  \n  // Find the matching source record by index (fallback to the first one if counts differ)\n  const source = (allSources[index] || allSources[0]).json;\n  \n  // Extract text and find placeholders for this specific document\n  const text = extractText(documentResponse);\n  const remaining = [...new Set(text.match(/\\{\\{[A-Z0-9_]+\\}\\}/g) || [])];\n\n  // 3. Return the structured payload for this specific item\n  return {\n    json: {\n      copiedDocumentId: source.copiedDocumentId,\n      copiedDocumentName: source.copiedDocumentName,\n      copiedDocumentUrl: source.copiedDocumentUrl,\n      saleId: source.saleId,\n      verificationPassed: remaining.length === 0,\n      remainingPlaceholders: remaining,\n      pdfFileName: `${source.title || source.copiedDocumentName}.pdf` \n    }\n  };\n});"
+      },
+      "id": "ce2b5dd1-7684-4b2a-8d3b-061e7f99f21c",
+      "name": "Verify No Placeholders Remain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -816,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "if1",
+              "leftValue": "={{ $json.verificationPassed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e3083ad2-d3bf-4172-b354-284b18350a01",
+      "name": "Verification Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -576,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files/' + $('Replace Placeholders').item.json.documentId + '/export'}}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "mimeType",
+              "value": "application/pdf"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "={{ $json.pdfFileName }}"
+            }
+          }
+        }
+      },
+      "id": "487dd47a-d23d-4d38-9de0-aa9ec92162d8",
+      "name": "Export Copied Document as PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -320,
+        -80
+      ],
+      "credentials": {
+        "googleOAuth2Api": {
+          "id": "HkFxs8uvgasEsDMb",
+          "name": "Google account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nthrow new Error(\n  `Document verification failed. Unreplaced placeholders: ${data.remainingPlaceholders.join(', ')}`\n);"
+      },
+      "id": "7edf8a2d-e039-46a4-b30a-665868f2ffb9",
+      "name": "Stop - Verification Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "copy",
+        "fileId": {
+          "__rl": true,
+          "value": "1nbSIaDRoXjWbTedqQ2DpxoF9SHqC7-A2NzDCCU4jKCM",
+          "mode": "list",
+          "cachedResultName": "SALE DEED TEMPLATE",
+          "cachedResultUrl": "https://docs.google.com/document/d/1nbSIaDRoXjWbTedqQ2DpxoF9SHqC7-A2NzDCCU4jKCM/edit?usp=drivesdk"
+        },
+        "name": "={{ $json.outputDocumentName }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1792,
+        0
+      ],
+      "id": "454728a9-12e7-44da-9843-04d71f0c02c3",
+      "name": "Copy file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "GVt9MLp4lVuH56Fx",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "documentId": {
+          "__rl": true,
+          "value": "1eHHUDMJxJ5ym1oSwBFjmJ5WPZJthFFefIxqil3qdvLg",
+          "mode": "list",
+          "cachedResultName": "Sales",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eHHUDMJxJ5ym1oSwBFjmJ5WPZJthFFefIxqil3qdvLg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eHHUDMJxJ5ym1oSwBFjmJ5WPZJthFFefIxqil3qdvLg/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [
+        -2256,
+        0
+      ],
+      "id": "15f89473-6d6c-4a38-95b3-f1fe67323f0b",
+      "name": "Google Sheets Trigger",
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": {
+          "id": "QTd7DkBnmWK5hT0g",
+          "name": "Google Sheets Trigger OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "={{ $('Export Copied Document as PDF').item.json.pdfFileName }}",
+        "name": "={{ $('Export Copied Document as PDF').item.json.pdfFileName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "11FfaHASFwf7plU2Hh0uuSHVmCPO1LehD",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -112,
+        -80
+      ],
+      "id": "6fa29a36-ad55-4f7c-b0ed-c26f202c17a9",
+      "name": "Upload file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "GVt9MLp4lVuH56Fx",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Sale Data and Configuration": {
+      "main": [
+        [
+          {
+            "node": "Copy file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Replacement Requests": {
+      "main": [
+        [
+          {
+            "node": "Replace Placeholders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replace Placeholders": {
+      "main": [
+        [
+          {
+            "node": "Read Copied Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Copied Document": {
+      "main": [
+        [
+          {
+            "node": "Verify No Placeholders Remain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify No Placeholders Remain": {
+      "main": [
+        [
+          {
+            "node": "Verification Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verification Passed?": {
+      "main": [
+        [
+          {
+            "node": "Export Copied Document as PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Verification Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Export Copied Document as PDF": {
+      "main": [
+        [
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Copy file": {
+      "main": [
+        [
+          {
+            "node": "Build Replacement Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets Trigger": {
+      "main": [
+        [
+          {
+            "node": "Sale Data and Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stop - Verification Failed": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "915bfe11-af76-4a11-a0c0-294d2ceceab0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "db741dd97ed59a69a1ba404818e230ddc5dcfaa0f23bc3f8bdd87a3ec9b237fd"
+  },
+  "nodeGroups": [],
+  "id": "EAezDPWX50sBYmMy",
+  "tags": []
+}
